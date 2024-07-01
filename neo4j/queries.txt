@@ -1,0 +1,62 @@
+LOAD CSV WITH HEADERS FROM 'file:///graph-reg-idf.csv' AS row
+    CREATE (:POI {
+        name: row.Nom_du_POI,
+        id: row.URI_ID_du_POI,
+        city: row.Commune,
+        category: row.Categories_de_POI,
+        coordinates:[toFloat(row.Latitude),toFloat(row.Longitude)]
+        });
+LOAD CSV WITH HEADERS FROM 'file:///cities_clean.csv' AS row
+    CREATE (:City {
+        name: row.label,
+        cityCode: row.city_code,
+        id: row.insee_code,
+        zipCode: row.zip_code,
+        regionName: row.region_name,
+        departementId: row.department_number,
+        departementName: row.department_name,
+        coordinates:[toFloat(row.latitude),toFloat(row.longitude)]
+        });
+
+match(c:City) return distinct c.regionName
+
+match(c:City{name:"paris"}) return c
+
+match(n:POI{city:'paris'}) where n.category CONTAINS 'placeofinterest'  return n
+
+#créer une projection pour les POIs de type placeofinterest à Paris
+match(n:POI{city:'paris'}) where n.category CONTAINS 'placeofinterest'  
+WITH gds.graph.project(
+'pois_paris',n
+) as g
+return g.graphName AS graph, g.nodeCount AS nodes, g.relationshipCount AS rels
+
+#delete graph
+CALL gds.graph.drop('pois_paris') YIELD graphName;
+
+CALL gds.graph.project(
+'pois',
+{
+  POI: {
+    properties: 'coordinates'
+  }
+},
+'*'
+);
+
+#estime la quantité de mémoire nécessaire au clustering
+CALL gds.kmeans.write.estimate('pois', {
+  writeProperty: 'kmeans',
+  nodeProperty: 'coordinates'
+})
+YIELD nodeCount, bytesMin, bytesMax, requiredMemory
+
+#vérifie la distribution des clusters
+CALL gds.kmeans.stats('pois', {
+  nodeProperty: 'coordinates',
+  k: 10,
+  randomSeed: 42
+})
+YIELD communityDistribution
+
+
