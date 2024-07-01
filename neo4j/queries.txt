@@ -93,3 +93,15 @@ YIELD nodeId, communityId
 RETURN gds.util.asNode(nodeId) AS node, communityId
 ORDER BY communityId
 } with node,communityId where communityId = 0 AND (node.city = 'paris') AND (node.category CONTAINS 'placeofinterest') AND (NOT (node.category CONTAINS 'accommodation')) AND (NOT (node.category CONTAINS 'serviceprovider')) return node
+
+#je cherche de POIs à Paris, sauf hébergements, services 
+CALL{
+CALL gds.kmeans.stream('poisparis', {
+  nodeProperty: 'coordinates',
+  k: 3,
+  seedCentroids: [[48.86287791,2.3599986], [48.802292474,2.117410101],[48.885771198,2.793406447]]
+})
+YIELD nodeId, communityId
+RETURN gds.util.asNode(nodeId) AS node, communityId
+ORDER BY communityId
+} with node,communityId where communityId = 0 AND (node.city = 'paris') AND (node.category NOT (CONTAINS ['serviceprovider','accommodation'])) return node
