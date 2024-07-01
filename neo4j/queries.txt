@@ -59,4 +59,25 @@ CALL gds.kmeans.stats('pois', {
 })
 YIELD communityDistribution
 
+#je donne les coordonnées de plusieurs villes importantes : Paris, Versailles, Coupvray
+#et je construits les clusters autour de ces points
+CALL gds.kmeans.stream('cities', {
+  nodeProperty: 'coordinates',
+  k: 3,
+  seedCentroids: [[48.86287791,2.3599986], [48.802292474,2.117410101],[48.885771198,2.793406447]]
+})
+YIELD nodeId, communityId
+RETURN gds.util.asNode(nodeId).name AS name, communityId
+ORDER BY communityId, name ASC
 
+#je sélectionne les POIs de type 'placeofinterest' dans le cluster autour de Paris
+CALL{
+CALL gds.kmeans.stream('poisparis', {
+  nodeProperty: 'coordinates',
+  k: 3,
+  seedCentroids: [[48.86287791,2.3599986], [48.802292474,2.117410101],[48.885771198,2.793406447]]
+})
+YIELD nodeId, communityId
+RETURN gds.util.asNode(nodeId) AS node, communityId
+ORDER BY communityId
+} with node,communityId where communityId = 0 AND node.category CONTAINS 'placeofinterest' return node
