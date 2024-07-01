@@ -1,0 +1,6 @@
+*.csv*
+__pycache__/
+*.db
+*.zip
+*.tar
+*.gzip
