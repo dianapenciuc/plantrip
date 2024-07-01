@@ -1,0 +1,5 @@
+__pycache__/
+*.db
+*.zip
+*.tar
+*.gzip
