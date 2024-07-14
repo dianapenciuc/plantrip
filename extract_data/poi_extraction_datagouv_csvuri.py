@@ -29,7 +29,43 @@ import matplotlib.colors as mcolors
 # 1/ EXTRACTION DES DONNEES
 ###########################
 
-# 1/1 Liste URLs par région des CSV de DATATourisme
+# 1/1 Ingestion des données de DATAToutisme dans un dataframe
+
+
+class DataLoader:
+    def __init__(self, urls, chunk_size=100000, max_workers=10):
+        self.urls = urls
+        self.chunk_size = chunk_size
+        self.max_workers = max_workers
+        self.data_frames = []
+
+    def load_single_url(self, sigle, region, url):
+        data_frames = []
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            csv_data = StringIO(response.text)
+            chunks = pd.read_csv(csv_data, chunksize=self.chunk_size, low_memory=False)
+            for chunk in chunks:
+                chunk['Sigle_Region'] = sigle
+                chunk['Region'] = region
+                data_frames.append(chunk)
+        except requests.exceptions.RequestException as e:
+            print(f"Erreur lors du chargement depuis {url}: {str(e)}")
+        except pd.errors.ParserError as e:
+            print(f"Erreur lors de l'analyse du CSV depuis {url}: {str(e)}")
+        return data_frames
+
+    def load_data(self):
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = [executor.submit(self.load_single_url, sigle, region, url) for sigle, region, url in self.urls]
+            for future in as_completed(futures):
+                self.data_frames.extend(future.result())
+        return pd.concat(self.data_frames, join='inner', ignore_index=True)
+
+
+# 1/2 Application de l'ingestion des données
+
 sigles_regions_urls = [
     ("REU", "Ile de la Réunion", "https://www.data.gouv.fr/fr/datasets/r/2b52bb1f-8676-43f2-b883-f673e7015ed9"),
     ("PDL", "Pays de la Loire", "https://www.data.gouv.fr/fr/datasets/r/56d437a7-eb0c-4c31-9138-539be94bc490"),
@@ -51,403 +87,304 @@ sigles_regions_urls = [
     ("ARA", "Auvergne Rhône Alpes", "https://www.data.gouv.fr/fr/datasets/r/5b3c2cee-44b7-48bd-b4e8-439a03ff6cd2")
 ]
 
-# 1/2 Ingestion des données de DATAToutisme dans un dataframe
+data_loader = DataLoader(sigles_regions_urls)
+concatenated_df = data_loader.load_data()
+concatenated_df.head()
 
-    # 1/2/1 Fonction pour charger les données d'une seule URL
 
-def load_single_url(sigle, region, url, chunk_size=100000):
-    data_frames = []
-    try:
-        response = requests.get(url)
-        response.raise_for_status()  # Vérifie si la requête a réussi (statut HTTP 200)
-        
-        # Utilisation de StringIO pour lire le contenu de la réponse comme un fichier CSV
-        csv_data = StringIO(response.text)
-        
-        # Charger les données par morceaux (chunking)
-        chunks = pd.read_csv(csv_data, chunksize=chunk_size, low_memory=False)
-        
-        for chunk in chunks:
-            # Ajouter les colonnes Sigle_Region et Region
-            chunk['Sigle_Region'] = sigle
-            chunk['Region'] = region
-            data_frames.append(chunk)
-        
-    except requests.exceptions.RequestException as e:
-        print(f"Erreur lors du chargement depuis {url}: {str(e)}")
-        
-    except pd.errors.ParserError as e:
-        print(f"Erreur lors de l'analyse du CSV depuis {url}: {str(e)}")
-    
-    return data_frames
-
-    # 1/2/2 Fonction pour charger les données de toutes les URL en utilisant le multithreading
-
-def load_data_from_urls(sigles_regions_urls, chunk_size=100000, max_workers=10):
-    all_data_frames = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Soumettre les tâches au thread pool
-        futures = [executor.submit(load_single_url, sigle, region, url, chunk_size) for sigle, region, url in sigles_regions_urls]
-        
-        # Attendre que toutes les tâches soient terminées
-        for future in as_completed(futures):
-            all_data_frames.extend(future.result())
-    
-    # Concaténer tous les DataFrames en un seul
-    concatenated_df = pd.concat(all_data_frames, join='inner', ignore_index=True)
-    
-    return concatenated_df
-
-concatenated_df = load_data_from_urls(sigles_regions_urls)
 
 
 ###############################
 # 2/ TRANSFORMATION DES DONNEES
 ###############################
 
+# 2/1 Transformation pour identifier les catégories et les thèmes
 
-# 2/1 Séparation de la variable Code_postal_et_commune en deux champs 'code postal' et 'commune'
+class DataTransformer:
+    def __init__(self, df):
+        self.df = df
 
-concatenated_df[['code_postal', 'commune']] = concatenated_df['Code_postal_et_commune'].str.split('#', expand=True)
+    def transform_data(self):
+        self.df[['code_postal', 'commune']] = self.df['Code_postal_et_commune'].str.split('#', expand=True)
+        self.df_cleaned = self.df[['URI_ID_du_POI', 'Nom_du_POI', 'Description', 'Categories_de_POI', 'Latitude', 'Longitude', 'Adresse_postale', 'code_postal', 'commune', 'Region', 'Sigle_Region', 'Date_de_mise_a_jour', 'Contacts_du_POI']]
+        self.clean_categories()
+        self.assign_categories()
+        self.identify_theme()
+        return self.df_cleaned
 
+    def clean_categories(self):
+        to_remove = ["https://www.datatourisme.fr/ontology/core#", "http://schema.org/", "http://purl.org/ontology/olo/core#"]
+        self.df_cleaned["Categories_de_POI_new"] = self.df_cleaned['Categories_de_POI'].apply(lambda x: self.clean_string(x, to_remove))
 
-# 2/2 Identification de la véritable variable 'catégorie'
+    def clean_string(self, input_string, to_remove):
+        for item in to_remove:
+            input_string = input_string.replace(item, "")
+        input_string = input_string.replace("||", "|").strip("|")
+        return input_string
 
+    def assign_categories(self):
+        target_categories = ['PlaceOfInterest', 'Product', '%Event%', '%Tour%']
+        self.df_cleaned['Category_List'] = self.df_cleaned['Categories_de_POI_new'].str.split('|')
+        self.df_cleaned['Catégorie_OK'] = self.df_cleaned['Category_List'].apply(lambda x: self.get_categorie_ok(x, target_categories))
+        mapping = {'PlaceOfInterest': 'Lieu', '%Event%': 'Evènement et manifestation', '%Tour%': 'Itinéraire touristique', 'Product': 'Produit'}
+        self.df_cleaned['Catégorie_OK'] = self.df_cleaned['Catégorie_OK'].replace(mapping)
 
-      # 2/2/1 Sélection des variables utiles pour la suite de l'analyse  
+    def get_categorie_ok(self, categories, target_categories):
+        for category in target_categories:
+            regex_category = category.replace('%', '.*')
+            if any(re.search(regex_category, cat) for cat in categories):
+                return category
+        return categories[0] if categories else None
 
-concatenated_df_cleaned_util=concatenated_df[['URI_ID_du_POI','Nom_du_POI', 'Description', 'Categories_de_POI','Latitude','Longitude', 'Adresse_postale', 'code_postal', 'commune', 'Region', 'Sigle_Region', 'Date_de_mise_a_jour', 'Contacts_du_POI']]
+    def identify_theme(self):
+        self.df_cleaned['Categories_de_POI_temp'] = self.df_cleaned['Categories_de_POI_new'].str.strip().fillna('')
+        categories_to_remove = ['PlaceOfInterest', 'PointOfInterest', 'Product', 'Event', 'Tour']
+        self.df_cleaned['Categorie_temp'] = self.df_cleaned['Categories_de_POI_temp'].apply(lambda x: self.remove_categories_and_deduplicate(x, categories_to_remove))
+        self.df_cleaned['Thème_OK'] = self.df_cleaned['Categorie_temp'].apply(lambda x: x.split('|')[-1])
 
-      # 2/2/2 liste des éléments rédondants et non significatives à supprimer
+    def remove_categories_and_deduplicate(self, categories, to_remove):
+        categories = categories.split('|')
+        filtered_categories = [category for category in categories if not any(rem in category for rem in to_remove)]
+        unique_categories = list(dict.fromkeys(filtered_categories))
+        return '|'.join(unique_categories)
 
-to_remove = ["https://www.datatourisme.fr/ontology/core#","http://schema.org/","http://purl.org/ontology/olo/core#"]
+# 2/2 Application des transformations sur les données
 
-      # 2/2/3 Fonction pour nettoyer les caratères spéciaux
-
-def clean_string(input_string):
-    for item in to_remove:
-        input_string = input_string.replace(item, "")
-    input_string = input_string.replace("||", "|").strip("|")
-    return input_string
-
-      # 2/2/4 Appliquer la fonction de nettoyage à la colonne 'Categorie_POi'
-
-concatenated_df_cleaned_util["Categories_de_POI_new"] = concatenated_df_cleaned_util['Categories_de_POI'].apply(clean_string)
-
-      # 2/2/5 Liste des catégories voulues
-
-target_categories = ['PlaceOfInterest', 'Product', '%Event%', '%Tour%']
-
-      # 2/2/6 Fonction pour assigner les catégories voulues
-
-def get_categorie_ok(categories, target_categories):
-    for category in target_categories:
-        regex_category = category.replace('%', '.*')
-        if any(re.search(regex_category, cat) for cat in categories):
-            return category
-    return categories[0] if categories else None
-
-      # 2/2/7 Appliquer la fonction aux données
-
-concatenated_df_cleaned_util['Category_List'] = concatenated_df_cleaned_util['Categories_de_POI_new'].str.split('|')
-concatenated_df_cleaned_util['Catégorie_OK'] = concatenated_df_cleaned_util['Category_List'].apply(lambda x: get_categorie_ok(x, target_categories))
-
-      # 2/2/8 Dictionnaire de mapping entre les catégories voulues et les labels de celles-ci
-
-mapping = {'PlaceOfInterest': 'Lieu', '%Event%': 'Evènement et manifestation', '%Tour%': 'Itinéraire touristique', 'Product': 'Produit'}
-
-      # 2/2/9 Remplacement des catégories voulues par leur label
-
-concatenated_df_cleaned_util['Catégorie_OK'] = concatenated_df_cleaned_util['Catégorie_OK'].replace(mapping)
-concatenated_df_cleaned_util["Catégorie_OK"].value_counts()
-
-
-# 2/3 Identification du thème
-
-
-      # 2/3/1 Suppression des espaces inutiles
-
-concatenated_df_cleaned_util['Categories_de_POI_temp'] = concatenated_df_cleaned_util['Categories_de_POI_new'].str.strip()
-
-      # 2/3/2 Remplacement des valeurs manquantes par une chaîne vide
-
-concatenated_df_cleaned_util['Categories_de_POI_temp'] = concatenated_df_cleaned_util['Categories_de_POI_temp'].fillna('')
-
-      # 2/3/3 Liste des catégories à supprimer
-
-categories_to_remove = ['PlaceOfInterest','PointOfInterest', 'Product', 'Event', 'Tour']
-
-      # 2/3/4 Fonction pour supprimer les occurrences spécifiées
-
-def remove_categories_and_deduplicate(categories, to_remove):
-    categories = categories.split('|')
-    filtered_categories = [category for category in categories if not any(rem in category for rem in to_remove)]
-    unique_categories = list(dict.fromkeys(filtered_categories))  # Éliminer les doublons en conservant l'ordre
-    return '|'.join(unique_categories)
-
-      # 2/3/5 Appliquer la fonction à la colonne 'Categories' pour créer 'Categorie_temp'
-
-concatenated_df_cleaned_util['Categorie_temp'] = concatenated_df_cleaned_util['Categories_de_POI_temp'].apply(lambda x: remove_categories_and_deduplicate(x, categories_to_remove))
-
-      # 2/3/6 Sélectionner la dernière valeur de chaque chaîne dans Categorie_temp
-
-concatenated_df_cleaned_util['Thème_OK'] = concatenated_df_cleaned_util['Categorie_temp'].apply(lambda x: x.split('|')[-1])
+data_transformer = DataTransformer(concatenated_df)
+concatenated_df_cleaned_util = data_transformer.transform_data()
+print(concatenated_df_cleaned_util.isnull().sum())
+print(concatenated_df_cleaned_util["Catégorie_OK"].value_counts())
 concatenated_df_cleaned_util['Thème_OK'].value_counts()
 
 
-############################################################
-# 3/ CHARGEMENT DES DONNEES DE LA REGION DE CORSE DANS NEO4J
-############################################################
+#########################
+# 3/ CALCUL DES DISTANCES
+#########################
 
 
-# 3/1 Les noeuds du graphe et leur attributs
+# 3/1 Classe pour calculer les distances géodésiques entre POIs
 
-      # 3/1/1 Sélection des variables qui serviront d'attributs pour les noeuds du graphe
+class DistanceCalculator:
+    def __init__(self, df):
+        self.df = df
 
-concatenated_df_cleaned_util_pour_graph=concatenated_df_cleaned_util[['Nom_du_POI', 'Description', 'Catégorie_OK', 'Adresse_postale', 'code_postal', 'commune', 'Region', 'Sigle_Region', 'Thème_OK', 'Latitude','Longitude']]
+    def calculate_distance(self, poi1, poi2):
+        lat1, lon1 = poi1['Latitude'], poi1['Longitude']
+        lat2, lon2 = poi2['Latitude'], poi2['Longitude']
+        return poi1['Nom_du_POI'], poi2['Nom_du_POI'], geodesic((lat1, lon1), (lat2, lon2)).kilometers
 
-      # 3/1/2 Sélection des données de la Corse (COR) qui représenteront les noeuds du graphe
+    def calculate_all_distances(self, num_threads=4):
+        poi_pairs = []
+        distances = []
+        chunk_size = len(self.df) // num_threads
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            futures = [executor.submit(self.process_chunk, i, min(i + chunk_size, len(self.df))) for i in range(0, len(self.df), chunk_size)]
+            for future in futures:
+                local_pairs, local_distances = future.result()
+                poi_pairs.extend(local_pairs)
+                distances.extend(local_distances)
+        return poi_pairs, distances
 
+    def process_chunk(self, start_idx, end_idx):
+        local_pairs = []
+        local_distances = []
+        for i in range(start_idx, end_idx):
+            for j in range(i + 1, len(self.df)):
+                poi1 = self.df.iloc[i]
+                poi2 = self.df.iloc[j]
+                poi1_name, poi2_name, distance = self.calculate_distance(poi1, poi2)
+                local_pairs.append((poi1_name, poi2_name))
+                local_distances.append(distance)
+        return local_pairs, local_distances
+
+    def normalize_distances(self, distances):
+        scaler = MinMaxScaler()
+        normalized_distances = scaler.fit_transform(np.array(distances).reshape(-1, 1)).flatten()
+        return normalized_distances
+
+# 3/2 Calcul des distances géodésiques
+
+    # 3/2/1 Sélection des variables qui serviront d'attributs pour les noeuds du graphe
+concatenated_df_cleaned_util_pour_graph = concatenated_df_cleaned_util[['Nom_du_POI', 'Description', 'Catégorie_OK', 'Adresse_postale', 'code_postal', 'commune', 'Region', 'Sigle_Region', 'Thème_OK', 'Latitude','Longitude']]
+
+    # 3/2/2 Sélection des données de la Corse (COR) qui représenteront les noeuds du graphe
 filtered_df_Lieu_Corse = concatenated_df_cleaned_util_pour_graph[(concatenated_df_cleaned_util_pour_graph['Region'] == 'Corse') & (concatenated_df_cleaned_util_pour_graph['Catégorie_OK'] == 'Lieu')]
-filtered_df_Lieu_Corse.head()
+print(filtered_df_Lieu_Corse.head())
 
-# 3/2 Les relations du graphe et leurs attributs
+    # 3/2/3 Créer une instance de la classe DistanceCalculator
+distance_calculator = DistanceCalculator(filtered_df_Lieu_Corse)
 
-
-      # 3/2/1 Fonction pour calculer la distance entre deux POIs (en kilomètres)
-
-def calculate_distance(poi1, poi2):
-    lat1, lon1 = poi1['Latitude'], poi1['Longitude']
-    lat2, lon2 = poi2['Latitude'], poi2['Longitude']
-    return poi1['Nom_du_POI'], poi2['Nom_du_POI'], geodesic((lat1, lon1), (lat2, lon2)).kilometers
-
-      # 3/2/2 Liste pour stocker les paires de POI et les distances qui les séparent
-
-poi_pairs = []
-distances = []
-
-      # 3/2/3 Fonction pour traiter un chunk de données
-
-def process_chunk(start_idx, end_idx):
-    local_pairs = []
-    local_distances = []
-    for i in range(start_idx, end_idx):
-        for j in range(i + 1, len(filtered_df_Lieu_Corse)):
-            poi1 = filtered_df_Lieu_Corse.iloc[i]
-            poi2 = filtered_df_Lieu_Corse.iloc[j]
-            poi1_name, poi2_name, distance = calculate_distance(poi1, poi2)
-            local_pairs.append((poi1_name, poi2_name))
-            local_distances.append(distance)
-    return local_pairs, local_distances
-
-      # 3/2/4 Mesure du temps de début global
-
-total_start_time = time.time()
-
-      # 3/2/5 Mesure du temps de début du calcul des distances
-
+    # 3/2/4 Calculer toutes les distances entre les paires de POIs
 start_time_distances = time.time()
-
-      # 3/2/6 Utilisation de ThreadPoolExecutor pour paralléliser les calculs
-
-num_threads = 4  
-chunk_size = len(filtered_df_Lieu_Corse) // num_threads
-
-with ThreadPoolExecutor(max_workers=num_threads) as executor:
-    futures = [executor.submit(process_chunk, i, i + chunk_size) for i in range(0, len(filtered_df_Lieu_Corse), chunk_size)]
-    for future in futures:
-        local_pairs, local_distances = future.result()
-        poi_pairs.extend(local_pairs)
-        distances.extend(local_distances)
-
-      # 3/2/7 Mesure du temps de fin du calcul des distances
-
+poi_pairs, distances = distance_calculator.calculate_all_distances(num_threads=4)
 end_time_distances = time.time()
 
-      # 3/2/8 Création du DataFrame des relations
-
-distance_df = pd.DataFrame(poi_pairs, columns=['POI1', 'POI2'])
-distance_df['distance_POI1_POI2'] = distances
-
-      # 3/2/9 Mesure du temps de début de la normalisation de la distance entre POI
-
+    # 3/2/5 Normaliser les distances
 start_time_normalization = time.time()
-
-      # 3/2/10 Normalisation de la distance entre POI avec Min-Max Scaling
-
-scaler = MinMaxScaler()
-distance_df['normalized_distance'] = scaler.fit_transform(distance_df[['distance_POI1_POI2']])
-
-      # 3/2/11 Mesure du temps de fin de la normalisation
-
+normalized_distances = distance_calculator.normalize_distances(distances)
 end_time_normalization = time.time()
 
-      # 3/2/12 Mesure du temps de fin global
+    # 3/2/6 Créer un DataFrame avec les résultats
+distance_df = pd.DataFrame({
+    'POI1': [pair[0] for pair in poi_pairs],
+    'POI2': [pair[1] for pair in poi_pairs],
+    'Distance_km': distances,
+    'Normalized_Distance': normalized_distances
+})
 
-total_end_time = time.time()
+    # 3/2/7 Afficher le DataFrame final avec les distances calculées et normalisées
+print(distance_df.head())
 
-      # 3/2/13 Affichage du DataFrame et des temps pris
-
+    # 3/2/8 Affichage des temps pris
 print(f"Temps pris pour calculer les distances: {end_time_distances - start_time_distances} secondes")
 print(f"Temps pris pour la normalisation des distances: {end_time_normalization - start_time_normalization} secondes")
-print(f"Temps total pris pour le traitement: {total_end_time - total_start_time} secondes")
-distance_df.head()
+print(f"Temps total pris pour le traitement: {end_time_normalization - start_time_distances} secondes")
 
 
-# 3/3 Chargement des noeuds et des relations dans Neo4j
+    # 3/2/9 Distribution des distances géodésiques entre POIs
+
+           # Définir le style de seaborn pour les graphiques
+sns.set(style="whitegrid")
+
+           # Créer l'histogramme des scores
+plt.figure(figsize=(10, 6))
+sns.histplot(distance_df['Distance_km'], bins=20, kde=True, color='skyblue')
+plt.title('Distribution des distances entre POIs en Corse')
+plt.xlabel('Distance')
+plt.ylabel('Nombre de couples de POIs')
+plt.tight_layout()
+
+           # Afficher le graphique
+plt.show()
 
 
-      # 3/3/1 Connexion à Neo4j
 
-graph = Graph("bolt://34.241.34.249:7687", auth=("neo4j", "neo4j"))
 
-      # 3/3/2 Fonction pour créer un nœud POI
+############################################################
+# 4/ CHARGEMENT DES DONNEES DE LA REGION DE CORSE DANS NEO4J
+############################################################
 
-def create_node(row):
-    query = (
-        f'MERGE (poi:POI {{name: "{row["Nom_du_POI"]}", description: "{row["Description"]}", '
-        f'category: "{row["Catégorie_OK"]}", address: "{row["Adresse_postale"]}", '
-        f'postal_code: "{row["code_postal"]}", commune: "{row["commune"]}", '
-        f'region: "{row["Region"]}", region_sigle: "{row["Sigle_Region"]}", '
-        f'theme: "{row["Thème_OK"]}", latitude: {row["Latitude"]}, longitude: {row["Longitude"]}}})'
-    )
-    graph.run(query)
+# 4/1 Classe pour charger les données dans Neo4j
+class Neo4jLoader:
+    def __init__(self, graph_uri, user, password):
+        self.graph = GraphDatabase.driver(graph_uri, auth=(user, password))
 
-      # 3/3/3 Fonction pour créer une relation entre les nœuds POI
+    def create_node(self, tx, row):
+        query = (
+            'MERGE (poi:POI {name: $name, description: $description, '
+            'category: $category, address: $address, '
+            'postal_code: $postal_code, commune: $commune, '
+            'region: $region, region_sigle: $region_sigle, '
+            'theme: $theme, latitude: $latitude, longitude: $longitude})'
+        )
+        tx.run(query, 
+               name=row["Nom_du_POI"], 
+               description=row["Description"],
+               category=row["Catégorie_OK"],
+               address=row["Adresse_postale"],
+               postal_code=row["code_postal"],
+               commune=row["commune"],
+               region=row["Region"],
+               region_sigle=row["Sigle_Region"],
+               theme=row["Thème_OK"],
+               latitude=row["Latitude"],
+               longitude=row["Longitude"])
 
-def create_relationship(row):
-    query = (
-        f'MATCH (poi1:POI {{name: "{row["POI1"]}"}}), (poi2:POI {{name: "{row["POI2"]}"}}) '
-        f'MERGE (poi1)-[:EST_DISTANT_DE {{distance: {row["distance_POI1_POI2"]}, distance_normalized: {row["normalized_distance"]}}}]->(poi2)'
-    )
-    graph.run(query)
+    def create_relationship(self, tx, row):
+        query = (
+            'MATCH (poi1:POI {name: $poi1}), (poi2:POI {name: $poi2}) '
+            'MERGE (poi1)-[:EST_DISTANT_DE {distance: $distance, distance_normalized: $distance_normalized}]->(poi2)'
+        )
+        tx.run(query, 
+               poi1=row["POI1"], 
+               poi2=row["POI2"],
+               distance=row["distance_POI1_POI2"], 
+               distance_normalized=row["normalized_distance"])
 
-      # 3/3/4 Fonction pour traiter les nœuds en parallèle
+    def load_nodes(self, df):
+        with self.graph.session() as session:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                executor.map(lambda row: session.write_transaction(self.create_node, row), [row for _, row in df.iterrows()])
 
-def process_nodes_parallel():
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        executor.map(create_node, [row for _, row in filtered_df_Lieu_Corse.iterrows()])
+    def load_relationships(self, df):
+        with self.graph.session() as session:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                executor.map(lambda row: session.write_transaction(self.create_relationship, row), [row for _, row in df.iterrows()])
 
-      # 3/3/5 Fonction pour traiter les relations en parallèle
 
-def process_relationships_parallel():
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        executor.map(create_relationship, [row for _, row in distance_df.iterrows()])
+# 4/2 Chargement des POIs et des relations dans Neo4j
 
-      # 3/3/6 Mesurer le temps de création des nœuds
+loader = Neo4jLoader(graph_uri="bolt://localhost:7687", user="neo4j", password="neo4j")
+loader.load_nodes(filtered_df_Lieu_Corse)
+loader.load_relationships(distance_df)
 
-start_time_nodes = time.time()
-process_nodes_parallel()
-end_time_nodes = time.time()
-print(f"Temps pris pour charger les nœuds: {end_time_nodes - start_time_nodes} secondes")
-
-      # 3/3/7 Mesurer le temps de création des relations
-
-start_time_relations = time.time()
-process_relationships_parallel()
-end_time_relations = time.time()
-print(f"Temps pris pour charger les relations: {end_time_relations - start_time_relations} secondes")
-
-print("Chargement des nœuds et des relations entre POI dans Neo4j terminé avec succès.")
 
 
 ################
-# 4/ CLUSTERING
+# 5/ CLUSTERING
 ################
 
-# 4/1 Application de l'algorithme des KMeans pour segmenter les données
 
-      # 4/1/1 Calcul des distances géodésiques entre chaque paire de POI
+# 5/1 Classe pour générer les clusters
 
-def calculate_geodesic_distance(point1, point2):
-    return geodesic(point1, point2).kilometers
+class GeodesicDistanceCalculator:
+    def __init__(self, df):
+        self.df = df
+        self.distances = []
+        self.poi_pairs = [(df.iloc[i], df.iloc[j]) for i in range(len(df)) for j in range(i + 1, len(df))]
+        
+    def calculate_geodesic_distance(self, point1, point2):
+        return geodesic(point1, point2).kilometers
 
-      # 4/1/2 Initialisation des listes pour les distances et les paires de POI
+    def calculate_distances(self):
+        for poi1, poi2 in self.poi_pairs:
+            distance = self.calculate_geodesic_distance((poi1['Latitude'], poi1['Longitude']), (poi2['Latitude'], (poi2['Longitude'])))
+            self.distances.append(distance)
+        return self.distances
 
-distances = []
-poi_pairs = [(filtered_df_Lieu_Corse.iloc[i], filtered_df_Lieu_Corse.iloc[j]) for i in range(len(filtered_df_Lieu_Corse)) for j in range(i + 1, len(filtered_df_Lieu_Corse))]
+    def create_distance_matrix(self):
+        return squareform(self.calculate_distances())
 
-      # 4/1/3 Calcul des distances géodésiques
+    def get_coordinates(self):
+        return self.df[['Latitude', 'Longitude']].values
 
-for poi1, poi2 in poi_pairs:
-    distance = calculate_geodesic_distance((poi1['Latitude'], poi1['Longitude']), (poi2['Latitude'], poi2['Longitude']))
-    distances.append(distance)
-
-      # 4/1/4 Convertir les distances en une matrice carrée
-
-distance_matrix = squareform(distances)
-
-      # 4/1/5 Convertir la matrice des distances en un DataFrame de coordonnées (X)
-
-X = filtered_df_Lieu_Corse[['Latitude', 'Longitude']].values
-
-      # 4/1/6 Initialiser K-Means contraint avec les paramètres souhaités
-
-clf = KMeansConstrained(
-    n_clusters=65,
-    #size_min=28,
-    size_max=20,
-    random_state=0,
-    n_jobs=-1
-)
-
-      # 4/1/7 Appliquer K-Means contraint sur les données
-
-labels = clf.fit_predict(X)
-
-      # 4/1/8 Ajouter les labels de cluster au DataFrame
-
-filtered_df_Lieu_Corse['label_des_clusters'] = labels
+    def apply_kmeans_constrained(self, n_clusters=65, size_min=None, size_max=20, random_state=0, n_jobs=-1):
+        X = self.get_coordinates()
+        clf = KMeansConstrained(
+            n_clusters=n_clusters,
+            size_min=size_min,
+            size_max=size_max,
+            random_state=random_state,
+            n_jobs=n_jobs
+        )
+        labels = clf.fit_predict(X)
+        self.df['label_des_clusters'] = labels
+        return self.df
 
 
-# 4/2 Visualisation des Clusters sur la carte
 
-      # 4/2/1 Créer une carte centrée sur la Corse
+# 5/2 Utilisation de la classe pour calculer les distances géodésiques entre POIs
 
-m = folium.Map(location=[42.0396, 9.0129], zoom_start=8)  # Coordonnées approximatives pour centrer sur la Corse
+      # 5/2/1 Sélection des données de la Corse (COR) qui représenteront les noeuds du graphe
+filtered_df_Lieu_Corse = concatenated_df_cleaned_util_pour_graph[(concatenated_df_cleaned_util_pour_graph['Region'] == 'Corse') & (concatenated_df_cleaned_util_pour_graph['Catégorie_OK'] == 'Lieu')]
 
-      # 4/2/2 Ajouter des clusters de POIs à la carte
+print(filtered_df_Lieu_Corse.head())
 
-marker_cluster = MarkerCluster().add_to(m)
+      # 5/2/2 Créer une instance de la classe GeodesicDistanceCalculator
+distance_calculator = GeodesicDistanceCalculator(filtered_df_Lieu_Corse)
 
-      # 4/2/3 Générer une palette de couleurs dynamique en fonction du nombre de clusters
+      # 5/2/3 Calculer les distances et créer la matrice de distances
+distance_matrix = distance_calculator.create_distance_matrix()
 
-num_clusters = filtered_df_Lieu_Corse['label_des_clusters'].nunique()
-cmap = plt.colormaps.get_cmap('tab20')
-colors = [mcolors.rgb2hex(cmap(i / num_clusters)) for i in range(num_clusters)]
+      # 5/2/4 Appliquer K-Means contraint sur les données
+filtered_df_Lieu_Corse_with_labels = distance_calculator.apply_kmeans_constrained(n_clusters=65, size_min=None, size_max=20, random_state=0, n_jobs=-1)
 
-      # 4/2/4 Ajouter les points à la carte avec des couleurs selon les clusters
+      # 5/2/5 Afficher le DataFrame final avec les labels de clusters
+print(filtered_df_Lieu_Corse_with_labels.head())
 
-for idx, row in filtered_df_Lieu_Corse.iterrows():
-    color = colors[row['label_des_clusters'] % num_clusters]  # Pour gérer plus de clusters que de couleurs dans la palette
-    folium.Marker(
-        location=[row['Latitude'], row['Longitude']],
-        popup=f"{row['Nom_du_POI']} (Cluster {row['label_des_clusters']})",
-        icon=folium.Icon(color=color)
-    ).add_to(marker_cluster)
 
-      # 4/2/5 Sauvegarder la carte dans un fichier HTML
 
-m.save('clusters_map.html')
 
-      # 4/2/6 Afficher la carte dans un Jupyter Notebook
-m
 
-      # 4/2/7 Label des clusters
-
-print(filtered_df_Lieu_Corse['label_des_clusters'].unique())
-print(len(filtered_df_Lieu_Corse['label_des_clusters'].unique()))
-
-      # 4/2/8 POIs par Cluster
-
-clusters = filtered_df_Lieu_Corse.groupby('label_des_clusters')['Nom_du_POI'].apply(list).to_dict()
-for cluster, pois in clusters.items():
-    print(f"Cluster {cluster}: {pois}")
-
-      # 4/2/9  Effectif des POIs par cluster
-
-poi_count_per_cluster = filtered_df_Lieu_Corse['label_des_clusters'].value_counts()
-print("\nNombre de POIs par cluster:")
-print(poi_count_per_cluster)
 
 
