@@ -1,6 +1,7 @@
 from neo4j import GraphDatabase
 from pprint import pprint
-from extract_distance import get_ors_matrix 
+from extract_distance import get_ors_matrix
+import pandas as pd
 
 driver = GraphDatabase.driver('bolt://0.0.0.0:7687',
                               auth=('neo4j', 'your_password'))
@@ -197,7 +198,7 @@ def set_distance(ids):
                     with driver.session() as session:
                         session.run(query)
                         
-def set_cluster(id,community):
+def set_poi_cluster(id,community):
     query = '''
         MATCH (n:POI{id:\'''' + id + '''\'})
         SET n.cluster = ''' + str(community) + '''
@@ -205,6 +206,16 @@ def set_cluster(id,community):
     with driver.session() as session:
         session.run(query)
 
+async def set_clusters(tx):
+    filename = "file:///output_with_clusters.csv"
+    query = '''
+        LOAD CSV WITH HEADERS FROM \'''' + filename + '''\' AS row
+        MATCH (n:POI{id:row.URI})
+        SET n.cluster = row.Cluster
+        '''
+    result = await tx.run(query)
+    records = await result.values()
+    print(len(records))
     
 def create_clusters(graphname='poisidf'):
     #après intégration ces points seront déterminés de manière automatique
@@ -238,7 +249,7 @@ def create_clusters(graphname='poisidf'):
     for record in records:
         item = record.data()['node']
         community = record.data()['communityId']
-        set_cluster(item['id'],community)
+        set_poi_cluster(item['id'],community)
     
      
           
