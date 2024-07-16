@@ -31,3 +31,5 @@ docker run -d \
     --env dbms.security.allow_csv_import_from_file_urls=true\
     --env NEO4J_server_memory_pagecache_size=8G \
     neo4j:5.20.
+
+
