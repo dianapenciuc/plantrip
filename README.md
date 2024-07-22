@@ -1,10 +1,7 @@
-# plantrip
-L’objectif du projet est la création d’une application permettant de proposer un itinéraire selon certains critères
-
-Le dossier data contient des échantillons de données, le dataset complet sera disponible sur un stockage externe
-
-Le fichier requirements.txt contient les dépendances pour l'environnement python; le contenu actuel est
-donné à titre d'exemple
+# Plantrip
+L’objectif du projet est la création d’une application permettant de proposer un itinéraire optimisé selon certains critères (Durée du séjour, lieu de visite).
+Le dossier data contient actuellement des échantillons de données, le dataset complet est disponible sur un stockage externe ainsi que les fichiers de données extraites et transformées.
+Le fichier requirements.txt contient les dépendances pour l'environnement python; le contenu actuel est donné à titre d'exemple.
 
 ---------------------------------------------------------------------------------------------------------------------
 Dans l'ordre chronologique de lancement pour un fonctionnement optimal:
