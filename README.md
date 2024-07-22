@@ -12,7 +12,7 @@ Dans l'ordre chronologique de lancement pour un fonctionnement optimal:
   - Déplace les anciens fichiers téléchargés dans un dossier ./data/jsonld/previous_versions.
   - Il faut lancer le script en étant dans le dossier principal du projet. Ce fichier a été testé à partir d'un processus Windows Task Scheduler réalisé toutes les semaines.
 
-2 - jsonld_extract:
+2 - jsonld_extract.py:
   - Permet d'extraire les données brutes des fichiers jsonld et de les stocker dans un fichier csv par jsonld.
   	=> Données extraites pour chauqe POI : id, nom, type(s), theme(s), startdate, enddate, street, postalcode, city, insee, region, latitude, longitude, email, web, tel, lastupdate, comment
 		=> 4 fichiers csv seront créés car 4 jsonld téléchargés à chaque update.
