@@ -23,3 +23,5 @@ Dans l'ordre chronologique de lancement pour un fonctionnement optimal:
   - Dans les colonnes "postalcode" et "latitude", certaines données sont sous une forme particulière ("data:xxxxxxx"). Cette forme est en fait une partie d'url qui permet de récupérer les données d'intérêts.
  	  Exemple 1: https://data.datatourisme.fr/6de52089-2ef6-310c-a4ef-ae310b273cc7 nous amène sur une page permettant de récupérer _via_ du webscrapping les données d'adresse
 	  Exemple 2: https://data.datatourisme.fr/26871bb2-1294-3c82-9c39-99b16e4247d8 nous amène sur une page permettant de récupérer _via_ du webscrapping les données de géolocalisation
+	- Ajout du numéro insee de la commune en se basant sur l'API XXX
+	- Ajout d'une colonne région en se basant sur le code postal
