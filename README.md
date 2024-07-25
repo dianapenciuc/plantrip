@@ -32,5 +32,4 @@ Dans l'ordre chronologique de lancement pour un fonctionnement optimal:
     
 	  Exemple 2: https://data.datatourisme.fr/26871bb2-1294-3c82-9c39-99b16e4247d8 nous amène sur une page permettant de récupérer _via_ du webscrapping les données de géolocalisation
 
-- Ajout du numéro insee de la commune en se basant sur l'API XXX
 - Rempli la colonne région en se basant sur le code postal
