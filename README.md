@@ -35,4 +35,5 @@ Dans l'ordre chronologique de lancement pour un fonctionnement optimal:
 - Rempli la colonne région en se basant sur le code postal
 
 ## 4 - Load_csv_to_sql.py:
+- Version bêta
 - Charge les données dans SQL Server, il faut au préalable avoir créer une base de données "itineraire_test" dans un SQLserver pour que le script puisse créer une table par fichiers.
