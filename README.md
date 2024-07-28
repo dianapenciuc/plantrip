@@ -33,3 +33,6 @@ Dans l'ordre chronologique de lancement pour un fonctionnement optimal:
 	  Exemple 2: https://data.datatourisme.fr/26871bb2-1294-3c82-9c39-99b16e4247d8 nous amène sur une page permettant de récupérer _via_ du webscrapping les données de géolocalisation
 
 - Rempli la colonne région en se basant sur le code postal
+
+## 4 - Load_csv_to_sql.py:
+- Charge les données dans SQL Server, il faut au préalable avoir créer une base de données "itineraire_test" dans un SQLserver pour que le script puisse créer une table par fichiers.
