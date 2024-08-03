@@ -7,25 +7,25 @@ Le fichier requirements.txt contient les dépendances pour l'environnement pytho
 Dans l'ordre chronologique de lancement pour un fonctionnement optimal:
   
 ## 1 - Task_Scheduler.bat:
-  - Permet de télécharger les flux de données au format jsonls provenant de DATATourisme dans un dossier ./data/jsonld/
-		=> 4 fichiers seront téléchargés correspondant aux différents types de POI définis sur DATATourisme (Lieux, Events, Tours et Produits)
-  - Déplace les anciens fichiers téléchargés dans un dossier ./data/jsonld/previous_versions.
+  - Permet de télécharger les flux de données au format jsonld provenant de DATATourisme dans un dossier ./data/jsonld/
+		=> 7 fichiers seront téléchargés correspondant aux différents types de POI définis sur DATATourisme (Lieux, Events, Tours et Produits)
+  - Effectue les modifications sur les anciens fichiers téléchargés (suppression/conservation)
+  - Lance le docker-compose pour initier le processus ETL sur les données téléchargées et alimenter la base de données.
   - Il faut lancer le script en étant dans le dossier principal du projet. Ce fichier a été testé à partir d'un processus Windows Task Scheduler réalisé toutes les semaines.
   
-
-## 2 - Extract_jsonld.py:
+## => Extract_jsonld.py :
   - Permet d'extraire les données brutes des fichiers jsonld et de les stocker dans un fichier csv par jsonld.
     
   	=> Données extraites pour chauqe POI : id, nom, type(s), theme(s), startdate, enddate, street, postalcode, city, insee, latitude, longitude, email, web, tel, lastupdate, comment
 
 	=> Nettoie les données type et thèmes
 
-  	=> 4 fichiers csv seront créés car 4 jsonld téléchargés à chaque update.
+  	=> 7 fichiers csv seront créés car 7 jsonld téléchargés à chaque update.
   - Prend automatiquement en entrée tous les fichiers se trouvant dans le dossier ./data/jsonld/
   - Ajout d'une colonne région
   
   
-## 3 - Transform_csv.py:
+## => Transform_csv.py:
   - Dans les colonnes "postalcode" et "latitude", certaines données sont sous une forme particulière ("data:xxxxxxx"). Cette forme est en fait une partie d'url ("https://data.datatourisme.fr/xxxxxxx) qui permet de récupérer les données d'intérêts.
     
  	  Exemple 1: https://data.datatourisme.fr/6de52089-2ef6-310c-a4ef-ae310b273cc7 nous amène sur une page permettant de récupérer _via_ du webscrapping les données d'adresse
@@ -33,7 +33,8 @@ Dans l'ordre chronologique de lancement pour un fonctionnement optimal:
 	  Exemple 2: https://data.datatourisme.fr/26871bb2-1294-3c82-9c39-99b16e4247d8 nous amène sur une page permettant de récupérer _via_ du webscrapping les données de géolocalisation
 
 - Rempli la colonne région en se basant sur le code postal
+- 7 fichiers seront ici aussi créés 
 
-## 4 - Load_csv_to_sql.py:
-- Version bêta
-- Charge les données dans SQL Server, il faut au préalable avoir créer une base de données "itineraire_test" dans un SQLserver pour que le script puisse créer une table par fichiers.
+## => Load_csv_to_sql.py:
+- Charge les données dans MySQL, le docker-compose lancer par task_scheduler ouvrira une base de données MySQl qui sera alimentée par les données traitées dans les scripts précédents.
+- 4 tables de données seront créées, une par type de POI.
