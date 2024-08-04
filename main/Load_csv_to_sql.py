@@ -18,7 +18,7 @@ types_colonnes = {
 
 # Tableau de conversion des types de colonnes
 convert={
-    'object' :'NVARCHAR(1000)',
+    'object' :'MEDIUMTEXT',
     'int64' : 'INT',
     'float64' : 'FLOAT',
     'bool' : 'BOOL'
@@ -95,7 +95,10 @@ fichiers = [f for f in listdir("/projet/data/csv/transformed/") if isfile(join("
 for fichier in fichiers:
     print("ouverture du fichier :",fichier)
     path_trs="/projet/data/csv/transformed/"+fichier
-    df_trs=pd.read_csv(path_trs, sep=';', low_memory=False)
+    try:
+        df_trs=pd.read_csv(path_trs, sep=';', low_memory=False)
+    except:
+        df_trs=pd.read_csv(path_trs, sep=';', engine='python')
     df_trs = df_trs.where(pd.notnull(df_trs), None)
 
     fichier_deb=fichier.split(".")

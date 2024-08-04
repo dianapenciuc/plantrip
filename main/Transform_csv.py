@@ -140,7 +140,9 @@ def region(dataframe):
     cpt_max=resultat.shape[0]
     count=0
     for index in resultat.index:
-        cp=dataframe.loc[index]['postalcode']  
+        cp=dataframe.loc[index]['postalcode']
+        if cp == 'None':
+            cp=None  
         region=None
         if cp != None and cp != "nan" and "data" not in cp :
             cp=re.sub(r'[^\d]+', '', cp)
@@ -152,6 +154,8 @@ def region(dataframe):
                     value=str(cp)
                     region_list= [reg for reg, code in REGIONS.items() if value in code]
                     region=region_list[0]
+                elif cp > 999999:
+                    cp=cp//100
                 elif cp > 99999:
                     cp=cp//10
                 elif cp > 97000:
@@ -190,12 +194,15 @@ fichiers = [f for f in listdir("/projet/data/csv/raw_extract/") if isfile(join("
 for fichier in fichiers:
     print("Ouverture du fichier : ",fichier)
     path_raw="/projet/data/csv/raw_extract/"+fichier
-    df_raw=pd.read_csv(path_raw, sep=';', encoding='utf-8', low_memory=False)
+    df_raw=pd.read_csv(path_raw, sep=';', encoding='UTF-8', engine="python")
     path1="/projet/data/csv/transformed/previous_versions/"+fichier
     print("Recherche du fichier",path1)
     if isfile(path1):
         print("Le fichier existe déjà, les données seront mises à jour.")
-        df_file=pd.read_csv(path1, sep=';', encoding='utf-8', low_memory=False)
+        try:
+            df_file=pd.read_csv(path1, sep=';', encoding='UTF-8', low_memory=False)
+        except:
+            df_file=pd.read_csv(path1, sep=';', encoding='UTF-8', engine='python')
         df_to_add= df_raw[~df_raw['id'].isin(df_file['id'])]
         df_filtered = df_file[df_file['id'].isin(df_raw['id'])]
         df_data = pd.concat([df_filtered, df_to_add], ignore_index=True)
@@ -235,7 +242,7 @@ for fichier in fichiers:
     print(df_data[(df_data['latitude'].isna()) & (df_data['longitude'].isna()) & (df_data['city'].isna()) & (df_data['postalcode'].isna())].shape)
     
     path2="/projet/data/csv/transformed/"+fichier
-    with open(path2,'w',newline='', encoding="UTF-8", errors='replace') as csvfile:
+    with open(path2,'w',newline='', encoding="UTF-8") as csvfile:
         df_data.to_csv(csvfile, index=False, sep=';')
         csvfile.close()
 print("Exécution de Transform.py terminée avec succés.")

@@ -11,6 +11,7 @@ import re
 import pandas as pd
 from os import listdir
 from os.path import isfile, join
+from unidecode import unidecode
 
 # Définition d'une méthode de descente dans le graph de données d'un fichier JSONLD
 def ldget(obj, path, default=None):
@@ -47,7 +48,10 @@ for fichier in fichiers:                            # Pour chaque fichier se tro
             # extraction des différenst éléments voulus dans le graphe
             uri = ldget(e, ['@id'])
             label = ldget(e, ['rdfs:label','@value'])
-            comment = ldget(e, ['rdfs:comment','@value']) 
+            comment = ldget(e, ['rdfs:comment','@value'])
+            comment=str(comment)
+            comment=unidecode(comment)
+            comment=re.sub(r'[^a-zA-Z0-9\s]', '', comment)
             startdate = ldget(e, ['takesPlaceAt', 'startDate', '@value'])
             enddate = ldget(e, ['takesPlaceAt', 'endDate', '@value'])
             geo = ldget(e, ['isLocatedAt', 'schema:geo'])
