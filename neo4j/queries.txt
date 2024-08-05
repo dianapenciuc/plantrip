@@ -105,3 +105,68 @@ YIELD nodeId, communityId
 RETURN gds.util.asNode(nodeId) AS node, communityId
 ORDER BY communityId
 } with node,communityId where communityId = 0 AND (node.city = 'paris') AND (node.category NOT (CONTAINS ['serviceprovider','accommodation'])) return node
+
+# recherche les POIs dans un bounding box autour d'un point de départ, par exemple (48.85,2.25)
+WITH
+  point({longitude: 2.25 - 0.015, latitude:48.85 - 0.015 }) AS lowerLeft,
+  point({longitude: 2.25 + 0.015, latitude: 48.85 + 0.015}) AS upperRight
+MATCH (p:POI)
+WHERE point.withinBBox(point({longitude: p.coordinates[1], latitude: p.coordinates[0]}), lowerLeft, upperRight)
+AND NOT (p.category CONTAINS 'accomodation') and not (p.category CONTAINS 'restaurant')
+RETURN p
+
+#recherche dans un rectangle autour d'un POI avec sélection des catégories
+WITH
+  point({longitude: 2.35185 - 0.02, latitude:48.85955 - 0.02 }) AS lowerLeft,
+  point({longitude: 2.25 + 0.02, latitude: 48.85 + 0.02}) AS upperRight
+MATCH (p:POI{city:'paris'})
+where point.withinBBox(point({longitude: p.coordinates[1], latitude: p.coordinates[0]}), lowerLeft, upperRight)
+and all(x in split(p.category,' ') WHERE NOT(x in ['serviceprovider','foodestablishment','accommodation','restaurant','transport','sportsandleisureplace','medicalplace','store']))
+and p.category <> "placeofinterest pointofinterest"
+RETURN p order by p.coordinates[0] asc limit 20
+
+#recherche du poi le plus proche autour d'un point, à une distance < 1km
+WITH
+  point({longitude: 2.35185 - 0.017, latitude:48.85955 - 0.017 }) AS start_point
+MATCH (p:POI{city:'paris'})
+WITH start_point,p, point.distance(start_point,point({longitude:p.coordinates[1],latitude:p.coordinates[0]})) as distance
+where any(x in split(p.category,' ') where x in ['service','culturalsite']) and distance < 1000
+RETURN p order by distance asc limit 1
+
+WITH
+  point({longitude: 2.35185 - 0.017, latitude:48.85955 - 0.017 }) AS start_point
+MATCH (p:POI{city:'paris'})
+WITH start_point,p, point.distance(start_point,point({longitude:p.coordinates[1],latitude:p.coordinates[0]})) as distance
+where any(x in split(p.category,' ') where x in ['service','culturalsite']) and distance < 1000
+RETURN p.id,distance order by distance asc limit 20
+
+#Teste avec un graph non-orienté
+CALL gds.graph.project(
+    'ParisOnfoot',
+    'POI',{
+    ONFOOT:
+    {
+        properties: 'duration', 
+        orientation: 'UNDIRECTED'
+    }
+    }
+)
+#Je cherche les minimum spanning trees de taille 10 (je garde 10 POIs)
+MATCH (source:POI {id: 'https://data.datatourisme.fr/19/8073f478-e038-3753-b4be-1710a9b7104d'})
+CALL gds.kSpanningTree.write('ParisOnfoot', {
+  k: 10,
+  sourceNode: source,
+  relationshipWeightProperty: 'duration',
+  writeProperty:'kmin'
+})
+YIELD preProcessingMillis, computeMillis, writeMillis, effectiveNodeCount
+RETURN preProcessingMillis,computeMillis,writeMillis, effectiveNodeCount;
+
+#Je récupère les POIs du minimum spanning tree
+MATCH (n)
+WITH n.kmin AS p, count(n) AS c
+WHERE c = 10
+MATCH (n)
+WHERE n.kmin = p
+RETURN n.id, n.coordinates,n.name, p as Partition
+

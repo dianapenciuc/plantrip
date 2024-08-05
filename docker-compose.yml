@@ -1,0 +1,29 @@
+services:
+
+  mysql:
+    build : ./data/mysql_db/
+    container_name: mysql-1
+    restart : always
+    environment :
+      MYSQL_DATABASE : 'itineraire'
+      MYSQL_ROOT_PASSWORD: 'rootadmin'
+    ports: 
+      - '3306:3306'
+    volumes:
+      - projet:/projet
+
+  etl:
+    build: ./main/
+    container_name: etl-1
+    volumes:
+      - projet:/projet
+    depends_on:
+      - mysql
+
+volumes:
+  projet:
+    driver: local 
+    driver_opts:
+      type: none
+      device: .
+      o: bind
