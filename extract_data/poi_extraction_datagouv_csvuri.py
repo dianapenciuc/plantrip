@@ -265,59 +265,48 @@ plt.show()
 ############################################################
 
 # 4/1 Classe pour charger les données dans Neo4j
+
 class Neo4jLoader:
     def __init__(self, graph_uri, user, password):
-        self.graph = GraphDatabase.driver(graph_uri, auth=(user, password))
+        self.graph = Graph(graph_uri, auth=(user, password))
 
-    def create_node(self, tx, row):
+    def create_node(self, row):
         query = (
-            'MERGE (poi:POI {name: $name, description: $description, '
-            'category: $category, address: $address, '
-            'postal_code: $postal_code, commune: $commune, '
-            'region: $region, region_sigle: $region_sigle, '
-            'theme: $theme, latitude: $latitude, longitude: $longitude})'
+            f'CREATE (poi:POI {{name: "{row["Nom_du_POI"]}", description: "{row["Description"]}", '
+            f'category: "{row["Catégorie_OK"]}", address: "{row["Adresse_postale"]}", '
+            f'postal_code: "{row["code_postal"]}", commune: "{row["commune"]}", '
+            f'region: "{row["Region"]}", region_sigle: "{row["Sigle_Region"]}", '
+            f'theme: "{row["Thème_OK"]}", latitude: {row["Latitude"]}, longitude: {row["Longitude"]}}})'
         )
-        tx.run(query, 
-               name=row["Nom_du_POI"], 
-               description=row["Description"],
-               category=row["Catégorie_OK"],
-               address=row["Adresse_postale"],
-               postal_code=row["code_postal"],
-               commune=row["commune"],
-               region=row["Region"],
-               region_sigle=row["Sigle_Region"],
-               theme=row["Thème_OK"],
-               latitude=row["Latitude"],
-               longitude=row["Longitude"])
+        self.graph.run(query)
 
-    def create_relationship(self, tx, row):
+    def create_relationship(self, row):
         query = (
-            'MATCH (poi1:POI {name: $poi1}), (poi2:POI {name: $poi2}) '
-            'MERGE (poi1)-[:EST_DISTANT_DE {distance: $distance, distance_normalized: $distance_normalized}]->(poi2)'
+            f'MATCH (poi1:POI {{name: "{row["POI1"]}"}}), (poi2:POI {{name: "{row["POI2"]}"}}) '
+            f'MERGE (poi1)-[:EST_DISTANT_DE {{distance: {row["distance_POI1_POI2"]}, distance_normalized: {row["normalized_distance"]}}}]->(poi2)'
         )
-        tx.run(query, 
-               poi1=row["POI1"], 
-               poi2=row["POI2"],
-               distance=row["distance_POI1_POI2"], 
-               distance_normalized=row["normalized_distance"])
+        self.graph.run(query)
 
     def load_nodes(self, df):
-        with self.graph.session() as session:
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                executor.map(lambda row: session.write_transaction(self.create_node, row), [row for _, row in df.iterrows()])
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            executor.map(self.create_node, [row for _, row in df.iterrows()])
 
     def load_relationships(self, df):
-        with self.graph.session() as session:
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                executor.map(lambda row: session.write_transaction(self.create_relationship, row), [row for _, row in df.iterrows()])
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            executor.map(self.create_relationship, [row for _, row in df.iterrows()])
+
+# 4/2 Connection  au contenaire Neo4j
+
+client = DockerClient()
+
+client.containers.run(image='datascientest/neo4j:latest', name='my_neo4j', detach=True, auto_remove=True, ports={'7474/tcp': 7474, '7687/tcp':7687}, network='bridge')
 
 
-# 4/2 Chargement des POIs et des relations dans Neo4j
+# 4/3 Chargement des POIs et des relations dans le contenaire Neo4j
 
-loader = Neo4jLoader(graph_uri="bolt://localhost:7687", user="neo4j", password="neo4j")
+loader = Neo4jLoader(graph_uri="bolt://localhost:7687", user="neo4j", password="test")
 loader.load_nodes(filtered_df_Lieu_Corse)
 loader.load_relationships(distance_df)
-
 
 
 ################
@@ -325,66 +314,394 @@ loader.load_relationships(distance_df)
 ################
 
 
-# 5/1 Classe pour générer les clusters
+# 5/1 Identification du meilleur modèle
 
-class GeodesicDistanceCalculator:
-    def __init__(self, df):
-        self.df = df
-        self.distances = []
-        self.poi_pairs = [(df.iloc[i], df.iloc[j]) for i in range(len(df)) for j in range(i + 1, len(df))]
-        
-    def calculate_geodesic_distance(self, point1, point2):
-        return geodesic(point1, point2).kilometers
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans, SpectralClustering, AgglomerativeClustering, MeanShift, estimate_bandwidth
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import silhouette_score, davies_bouldin_score
+from hdbscan import HDBSCAN
+from sklearn.cluster import DBSCAN
+import networkx as nx
+import community as community_louvain
 
-    def calculate_distances(self):
-        for poi1, poi2 in self.poi_pairs:
-            distance = self.calculate_geodesic_distance((poi1['Latitude'], poi1['Longitude']), (poi2['Latitude'], (poi2['Longitude'])))
-            self.distances.append(distance)
-        return self.distances
+# Charger les données
+df = filtered_df_Lieu_Corse_reset  # Remplacez 'filtered_df_Lieu_Corse_reset' par votre dataframe
 
-    def create_distance_matrix(self):
-        return squareform(self.calculate_distances())
+# Utiliser les colonnes Latitude et Longitude pour le clustering
+data = df[['Latitude', 'Longitude']].values
 
-    def get_coordinates(self):
-        return self.df[['Latitude', 'Longitude']].values
+# Initialisation des résultats
+results = []
 
-    def apply_kmeans_constrained(self, n_clusters=65, size_min=None, size_max=20, random_state=0, n_jobs=-1):
-        X = self.get_coordinates()
-        clf = KMeansConstrained(
-            n_clusters=n_clusters,
-            size_min=size_min,
-            size_max=size_max,
-            random_state=random_state,
-            n_jobs=n_jobs
+# KMeans
+for n_clusters in range(2, 10):
+    kmeans = KMeans(n_clusters=n_clusters, random_state=0)
+    labels = kmeans.fit_predict(data)
+    silhouette = silhouette_score(data, labels)
+    davies_bouldin = davies_bouldin_score(data, labels)
+    results.append(('KMeans', n_clusters, silhouette, davies_bouldin))
+
+# Gaussian Mixture Model
+for n_clusters in range(2, 10):
+    gmm = GaussianMixture(n_components=n_clusters, random_state=0)
+    labels = gmm.fit_predict(data)
+    silhouette = silhouette_score(data, labels)
+    davies_bouldin = davies_bouldin_score(data, labels)
+    results.append(('GMM', n_clusters, silhouette, davies_bouldin))
+
+# HDBSCAN
+hdbscan = HDBSCAN(min_cluster_size=10)
+labels = hdbscan.fit_predict(data)
+silhouette = silhouette_score(data, labels) if len(set(labels)) > 1 else float('inf')
+davies_bouldin = davies_bouldin_score(data, labels) if len(set(labels)) > 1 else float('inf')
+results.append(('HDBSCAN', len(set(labels)), silhouette, davies_bouldin))
+
+# DBSCAN
+for eps in np.arange(0.1, 1.0, 0.1):
+    dbscan = DBSCAN(eps=eps)
+    labels = dbscan.fit_predict(data)
+    if len(set(labels)) > 1:
+        silhouette = silhouette_score(data, labels)
+        davies_bouldin = davies_bouldin_score(data, labels)
+        results.append(('DBSCAN', len(set(labels)), silhouette, davies_bouldin))
+
+# Spectral Clustering
+for n_clusters in range(2, 10):
+    spectral = SpectralClustering(n_clusters=n_clusters, affinity='nearest_neighbors', random_state=0)
+    labels = spectral.fit_predict(data)
+    silhouette = silhouette_score(data, labels)
+    davies_bouldin = davies_bouldin_score(data, labels)
+    results.append(('SpectralClustering', n_clusters, silhouette, davies_bouldin))
+
+# MeanShift
+bandwidth_list = estimate_bandwidth(data) * np.linspace(0.5, 1.5, 5)
+for bandwidth in bandwidth_list:
+    meanshift = MeanShift(bandwidth=bandwidth)
+    labels = meanshift.fit_predict(data)
+    if len(set(labels)) > 1:
+        silhouette = silhouette_score(data, labels)
+        davies_bouldin = davies_bouldin_score(data, labels)
+        results.append(('MeanShift', len(set(labels)), silhouette, davies_bouldin))
+
+# Agglomerative Clustering
+for n_clusters in range(2, 10):
+    agglomerative = AgglomerativeClustering(n_clusters=n_clusters)
+    labels = agglomerative.fit_predict(data)
+    silhouette = silhouette_score(data, labels)
+    davies_bouldin = davies_bouldin_score(data, labels)
+    results.append(('AgglomerativeClustering', n_clusters, silhouette, davies_bouldin))
+
+# Affichage des résultats sous forme de tableau
+df_results = pd.DataFrame(results, columns=['Model', 'Clusters', 'Silhouette Score', 'Davies-Bouldin Score'])
+print(df_results)
+
+# Graphiques comparatifs
+fig, ax = plt.subplots(3, 1, figsize=(12, 18))
+
+# Silhouette Score
+df_results.groupby('Model').mean()['Silhouette Score'].plot(kind='bar', ax=ax[0], color='skyblue')
+ax[0].set_title('Mean Silhouette Score by Model')
+ax[0].set_ylabel('Silhouette Score')
+
+# Davies-Bouldin Score
+df_results.groupby('Model').mean()['Davies-Bouldin Score'].plot(kind='bar', ax=ax[1], color='salmon')
+ax[1].set_title('Mean Davies-Bouldin Score by Model')
+ax[1].set_ylabel('Davies-Bouldin Score')
+
+# Nombre de clusters
+df_results.groupby('Model').mean()['Clusters'].plot(kind='bar', ax=ax[2], color='lightgreen')
+ax[2].set_title('Mean Number of Clusters by Model')
+ax[2].set_ylabel('Number of Clusters')
+
+plt.tight_layout()
+plt.show()
+
+
+
+# 5/2 Clustering
+
+
+
+# Score silhouette
+
+from sklearn.metrics import silhouette_score
+
+best_score = -1
+best_clusters = None
+best_bandwidth = None
+
+for i, clusters in enumerate(results):
+    score = silhouette_score(data, clusters)
+    print(f"Silhouette Score for bandwidth={bandwidth_list[i]}: {score}")
+    
+    if score > best_score:
+        best_score = score
+        best_clusters = clusters
+        best_bandwidth = bandwidth_list[i]
+
+print(f"\nBest bandwidth: {best_bandwidth} with Silhouette Score: {best_score}")
+print(f"Clusters: {best_clusters}")
+
+
+# Score Bouldin
+
+from sklearn.metrics import davies_bouldin_score
+
+best_score = float('inf')
+best_clusters = None
+best_bandwidth = None
+
+for i, clusters in enumerate(results):
+    score = davies_bouldin_score(data, clusters)
+    print(f"Davies-Bouldin Index for bandwidth={bandwidth_list[i]}: {score}")
+    
+    if score < best_score:
+        best_score = score
+        best_clusters = clusters
+        best_bandwidth = bandwidth_list[i]
+
+print(f"\nBest bandwidth: {best_bandwidth} with Davies-Bouldin Index: {best_score}")
+print(f"Clusters: {best_clusters}")
+
+
+filtered_df_Lieu_Corse['best_clusters']=best_clusters
+
+
+
+# Affichage des meilleurs clusters
+
+
+import folium
+import pandas as pd
+import numpy as np
+from itertools import cycle
+
+    # Créer une carte centrée sur la Corse
+map_center = [42.0, 9.0]  # Coordonnées du centre de la Corse
+folium_map = folium.Map(location=map_center, zoom_start=8)
+
+    # Palette de couleurs disponibles dans matplotlib
+colors = [
+    'blue', 'orange', 'green', 'red', 'purple', 'brown', 'pink', 'gray', 'lightgreen', 'cadetblue',
+    'yellow', 'cyan', 'magenta', 'lime', 'navy', 'teal', 'gold', 'olive', 'chocolate', 'indigo'
+]
+
+    # Créer un cycle de couleurs pour attribuer des couleurs uniques à chaque cluster
+color_cycle = cycle(colors)
+
+    # Générer le dictionnaire de mapping des couleurs pour les clusters
+commune_color_map = {i: next(color_cycle) for i in range(20)}  # Changer le nombre 20 par le nombre de clusters maximum
+
+    # Ajouter des marqueurs pour chaque POI sur la carte, colorés par commune
+for index, row in filtered_df_Lieu_Corse.iterrows():
+    cluster = row['best_clusters']  # Utiliser le cluster basé sur le meilleur score Davies-Bouldin ou silhouette
+    color = commune_color_map.get(cluster, 'blue')  # Utiliser bleu par défaut si la commune n'est pas dans la map
+    popup_text = f"Nom: {row['Nom_du_POI']}<br>ville: {row['ville']}<br>Cluster: {cluster}"
+    folium.Marker(
+        [row['Latitude'], row['Longitude']],
+        popup=popup_text,
+        icon=folium.Icon(color=color)
+    ).add_to(folium_map)
+
+    # Afficher la carte
+folium_map.save('clustered_pois_map.html')  # Sauvegarder la carte au format HTML
+folium_map
+
+
+    # Plot clusters vs Ville
+
+import matplotlib.pyplot as plt
+
+    # Créer le crosstab entre les clusters et les villes
+crosstab_result = pd.crosstab(filtered_df_Lieu_Corse['best_clusters'], filtered_df_Lieu_Corse['ville'])
+
+    # Créer une figure pour le heatmap
+plt.figure(figsize=(12, 8))
+
+    # Générer le heatmap avec une palette de couleurs
+sns.heatmap(crosstab_result, annot=True, fmt='d', cmap='YlGnBu', linewidths=0.5, linecolor='black')
+
+    # Ajouter des titres et labels
+plt.title('Heatmap des POI par Cluster et Ville', fontsize=16)
+plt.xlabel('Ville', fontsize=12)
+plt.ylabel('Cluster', fontsize=12)
+
+    # Afficher le heatmap
+plt.show()
+
+
+    # Manipulation des clusters
+
+             # Utilisation de la classe
+             # Sélection des données de la Corse (COR) qui représenteront les noeuds du graphe
+filtered_df_Lieu_Corse_Cluster1 = filtered_df_Lieu_Corse[(filtered_df_Lieu_Corse['best_clusters'] == 1)]
+filtered_df_Lieu_Corse_Cluster0 = filtered_df_Lieu_Corse[(filtered_df_Lieu_Corse['best_clusters'] == 0)]
+filtered_df_Lieu_Corse_Cluster2 = filtered_df_Lieu_Corse[(filtered_df_Lieu_Corse['best_clusters'] == 2)]
+
+             # Créer une instance de la classe GeodesicDistanceCalculator
+distance_calculator_Lieu_Corse_Cluster1 = GeodesicDistanceCalculator(filtered_df_Lieu_Corse_Cluster1)
+distance_calculator_Lieu_Corse_Cluster0 = GeodesicDistanceCalculator(filtered_df_Lieu_Corse_Cluster0)
+distance_calculator_Lieu_Corse_Cluster2 = GeodesicDistanceCalculator(filtered_df_Lieu_Corse_Cluster2)
+
+             # Calculer les distances et créer la matrice de distances
+distance_matrix_Lieu_Corse_Cluster1 = distance_calculator_Lieu_Corse_Cluster1.create_distance_matrix()
+distance_matrix_Lieu_Corse_Cluster0 = distance_calculator_Lieu_Corse_Cluster0.create_distance_matrix()
+distance_matrix_Lieu_Corse_Cluster2 = distance_calculator_Lieu_Corse_Cluster2.create_distance_matrix()
+
+             # Appliquer K-Means contraint sur les données
+filtered_df_Lieu_Corse_Cluster1_with_labels = distance_calculator_Lieu_Corse_Cluster1.apply_kmeans_constrained(n_clusters=10, size_min=None, size_max=20, random_state=0, n_jobs=-1)
+filtered_df_Lieu_Corse_Cluster0_with_labels = distance_calculator_Lieu_Corse_Cluster0.apply_kmeans_constrained(n_clusters=10, size_min=None, size_max=20, random_state=0, n_jobs=-1)
+filtered_df_Lieu_Corse_Cluster2_with_labels = distance_calculator_Lieu_Corse_Cluster2.apply_kmeans_constrained(n_clusters=10, size_min=None, size_max=20, random_state=0, n_jobs=-1)
+
+             # Nombre de clusters
+print(len(filtered_df_Lieu_Corse_Cluster1_with_labels['label_des_clusters'].unique()))
+print(len(filtered_df_Lieu_Corse_Cluster0_with_labels['label_des_clusters'].unique()))
+print(len(filtered_df_Lieu_Corse_Cluster2_with_labels['label_des_clusters'].unique()))
+
+             # labels des clusters
+print(filtered_df_Lieu_Corse_Cluster1_with_labels['label_des_clusters'].unique())
+print(filtered_df_Lieu_Corse_Cluster0_with_labels['label_des_clusters'].unique())
+print(filtered_df_Lieu_Corse_Cluster2_with_labels['label_des_clusters'].unique())
+
+             # POIs par cluster
+clusters = filtered_df_Lieu_Corse_Cluster1_with_labels.groupby('label_des_clusters')['Nom_du_POI'].apply(list).to_dict()
+for cluster, pois in clusters.items():
+    print(f"Cluster {cluster}: {pois}")
+clusters = filtered_df_Lieu_Corse_Cluster0_with_labels.groupby('label_des_clusters')['Nom_du_POI'].apply(list).to_dict()
+for cluster, pois in clusters.items():
+    print(f"Cluster {cluster}: {pois}")
+clusters = filtered_df_Lieu_Corse_Cluster2_with_labels.groupby('label_des_clusters')['Nom_du_POI'].apply(list).to_dict()
+for cluster, pois in clusters.items():
+    print(f"Cluster {cluster}: {pois}")
+
+             # Effectif des POIs par subcluster
+poi_count_per_cluster_Lieu_Corse_Cluster1 = filtered_df_Lieu_Corse_Cluster1_with_labels['label_des_clusters'].value_counts()
+print("\nNombre de POIs par cluster:")
+poi_count_per_cluster_Lieu_Corse_Cluster1
+poi_count_per_cluster_Lieu_Corse_Cluster0 = filtered_df_Lieu_Corse_Cluster0_with_labels['label_des_clusters'].value_counts()
+print("\nNombre de POIs par cluster:")
+poi_count_per_cluster_Lieu_Corse_Cluster0
+poi_count_per_cluster_Lieu_Corse_Cluster2 = filtered_df_Lieu_Corse_Cluster1_with_labels['label_des_clusters'].value_counts()
+print("\nNombre de POIs par cluster:")
+poi_count_per_cluster_Lieu_Corse_Cluster2
+
+             #
+filtered_df_Lieu_Corse_Cluster1_with_labels['label_des_subclusters'] = (
+    filtered_df_Lieu_Corse_Cluster1_with_labels['best_clusters'].astype(str) + '.' + 
+    filtered_df_Lieu_Corse_Cluster1_with_labels['label_des_clusters'].astype(str)
+)
+filtered_df_Lieu_Corse_Cluster0_with_labels['label_des_subclusters'] = (
+    filtered_df_Lieu_Corse_Cluster0_with_labels['best_clusters'].astype(str) + '.' + 
+    filtered_df_Lieu_Corse_Cluster0_with_labels['label_des_clusters'].astype(str)
+)
+filtered_df_Lieu_Corse_Cluster2_with_labels['label_des_subclusters'] = (
+    filtered_df_Lieu_Corse_Cluster2_with_labels['best_clusters'].astype(str) + '.' + 
+    filtered_df_Lieu_Corse_Cluster2_with_labels['label_des_clusters'].astype(str)
+)
+filtered_df_Lieu_Corse_Cluster0_with_labels
+
+
+filtered_df_Lieu_Corse_Cluster_Other = filtered_df_Lieu_Corse.loc[~filtered_df_Lieu_Corse['best_clusters'].isin([0, 1, 2])]
+filtered_df_Lieu_Corse_Cluster_Other['label_des_clusters']=filtered_df_Lieu_Corse['best_clusters']
+filtered_df_Lieu_Corse_Cluster_Other['label_des_subclusters']=filtered_df_Lieu_Corse['best_clusters'].astype(str)
+filtered_df_Lieu_Corse_Cluster_Other.info()
+
+
+filtered_df_Lieu_Corse_Cluster_Other = filtered_df_Lieu_Corse[filtered_df_Lieu_Corse['best_clusters'].isin([3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])]
+filtered_df_Lieu_Corse_Cluster_Other['label_des_clusters']=filtered_df_Lieu_Corse['best_clusters']
+filtered_df_Lieu_Corse_Cluster_Other['label_des_subclusters']=filtered_df_Lieu_Corse['best_clusters'].astype(str)
+filtered_df_Lieu_Corse_Cluster_Other.info()
+
+
+        # Concaténation des DataFrames pour la formation des subclusters
+
+filtered_df_Lieu_Corse_reset = pd.concat([
+    filtered_df_Lieu_Corse_Cluster1_with_labels,
+    filtered_df_Lieu_Corse_Cluster0_with_labels,
+    filtered_df_Lieu_Corse_Cluster2_with_labels,
+    filtered_df_Lieu_Corse_Cluster_Other
+])
+
+        # Réinitialisation de l'index si nécessaire
+filtered_df_Lieu_Corse_reset.reset_index(drop=True, inplace=True)
+
+        # Plot des subclusters
+
+import matplotlib.pyplot as plt
+
+                   # Créer le crosstab entre les clusters et les villes
+crosstab_result = pd.crosstab(filtered_df_Lieu_Corse_reset['best_clusters'], filtered_df_Lieu_Corse_reset['label_des_clusters'])
+
+                   # Créer une figure pour le heatmap
+plt.figure(figsize=(12, 8))
+
+                   # Générer le heatmap avec une palette de couleurs
+sns.heatmap(crosstab_result, annot=True, fmt='d', cmap='YlGnBu', linewidths=0.5, linecolor='black')
+
+                   # Ajouter des titres et labels
+plt.title('Heatmap des POI par Cluster et sous-clusters', fontsize=16)
+plt.xlabel('Sous-clusters', fontsize=12)
+plt.ylabel('Cluster', fontsize=12)
+
+                   # Afficher le heatmap
+plt.show()
+
+
+         # Enregistrement du DataFrame pour streamlit
+
+joblib.dump(filtered_df_Lieu_Corse_reset, 'filtered_df_Lieu_Corse_reset.joblib')
+filtered_df_Lieu_Corse_reset.to_parquet('filtered_df_Lieu_Corse_reset.parquet')
+
+         # Chargement du DataFrame avec joblib
+filtered_df_Lieu_Corse_reset_loaded_joblib = joblib.load('filtered_df_Lieu_Corse_reset.joblib')
+filtered_df_Lieu_Corse_reset_loaded_parquet = pd.read_parquet('filtered_df_Lieu_Corse_reset.parquet')
+
+
+# 5/3 Chargement dans Neo4j
+
+        #5/3/1 Classe pour le chargement des clusters dans  Neo4j
+
+from py2neo import Graph
+from concurrent.futures import ThreadPoolExecutor
+
+class Neo4jLoader:
+    def __init__(self, graph_uri, user, password):
+        self.graph = Graph(graph_uri, auth=(user, password))
+
+    def create_node(self, row):
+        query = (
+            f'CREATE (poi:POI {{name: "{row["Nom_du_POI"]}", description: "{row["Description"]}", '
+            f'category: "{row["Catégorie_OK"]}", address: "{row["Adresse_postale"]}", '
+            f'postal_code: "{row["code_postal"]}", commune: "{row["commune"]}", commune: "{row["commune"]}", '
+            f'region: "{row["Region"]}", region_sigle: "{row["Sigle_Region"]}", '
+            f'theme: "{row["Thème_OK"]}", latitude: {row["Latitude"]}, longitude: "{row["Longitude"]}", '
+            f'cluster: "{row["best_clusters"]}", subcluster: "{row["label_des_subclusters"]}"}})'
         )
-        labels = clf.fit_predict(X)
-        self.df['label_des_clusters'] = labels
-        return self.df
+        self.graph.run(query)
 
+    def create_relationship(self, row):
+        query = (
+            f'MATCH (poi1:POI {{name: "{row["POI1"]}"}}), (poi2:POI {{name: "{row["POI2"]}"}}) '
+            f'MERGE (poi1)-[:EST_DISTANT_DE {{distance: {row["distance_POI1_POI2"]}, distance_normalized: {row["normalized_distance"]}}}]->(poi2)'
+        )
+        self.graph.run(query)
 
+    def load_nodes(self, df):
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            executor.map(self.create_node, [row for _, row in df.iterrows()])
 
-# 5/2 Utilisation de la classe pour calculer les distances géodésiques entre POIs
+    def load_relationships(self, df):
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            executor.map(self.create_relationship, [row for _, row in df.iterrows()])
 
-      # 5/2/1 Sélection des données de la Corse (COR) qui représenteront les noeuds du graphe
-filtered_df_Lieu_Corse = concatenated_df_cleaned_util_pour_graph[(concatenated_df_cleaned_util_pour_graph['Region'] == 'Corse') & (concatenated_df_cleaned_util_pour_graph['Catégorie_OK'] == 'Lieu')]
+            # 5/3/3 Chargement des Noeuds et des relations
 
-print(filtered_df_Lieu_Corse.head())
-
-      # 5/2/2 Créer une instance de la classe GeodesicDistanceCalculator
-distance_calculator = GeodesicDistanceCalculator(filtered_df_Lieu_Corse)
-
-      # 5/2/3 Calculer les distances et créer la matrice de distances
-distance_matrix = distance_calculator.create_distance_matrix()
-
-      # 5/2/4 Appliquer K-Means contraint sur les données
-filtered_df_Lieu_Corse_with_labels = distance_calculator.apply_kmeans_constrained(n_clusters=65, size_min=None, size_max=20, random_state=0, n_jobs=-1)
-
-      # 5/2/5 Afficher le DataFrame final avec les labels de clusters
-print(filtered_df_Lieu_Corse_with_labels.head())
-
-
-
-
-
-
-
+# Connexion à Neo4j
+loader = Neo4jLoader(graph_uri="bolt://localhost:7687", user="neo4j", password="test")
+# Chargement des noeuds
+loader.load_nodes(filtered_df_Lieu_Corse_reset)
+#Chargement des relations
+loader.load_relationships(distance_df)
