@@ -18,10 +18,6 @@ from utils.cat import cat, poi
 categories = cat
 points_interet = poi
 
-from flask import Flask
-
-server = Flask(__name__)
-
 api_key = "5b3ce3597851110001cf62483a064f210f254131b3cb5b034c97d3a5"
 client = openrouteservice.Client(key=api_key)
 
@@ -32,12 +28,10 @@ cache = cachetools.TTLCache(maxsize=100, ttl=300)
 # Compteur global pour les requêtes API
 api_request_count = 0
 
-
 G = nx.Graph()
 
-
 for idx, row in data.iterrows():
-    G.add_node(row['Label'], pos=(row['Longitude'], row['Latitude']), cluster=row['Cluster'])
+    G.add_node(row['Label'], pos=(row['Longitude'], row['Latitude']), cluster=row['Cluster'], comment=row.get('Comment', ''))
 
 def ajouter_aretes_dans_cluster(graphe):
     noeuds = list(graphe.nodes(data=True))
@@ -101,10 +95,11 @@ def create_map_with_folium(chemin=None, positions_dict=None):
     if chemin and positions_dict:
         for i, label in enumerate(chemin):
             location = positions_dict[label]
+            comment = data[data['Label'] == label]['Comment'].values[0] if 'Comment' in data.columns else ''
             folium.Marker(
                 location=location,
                 tooltip=f"{i+1}. {label}",
-                popup=f"{i+1}. {label}",
+                popup=f"{i+1}. {label}<br>{comment}",
                 icon=folium.DivIcon(html=f'<div style="font-size: 24pt; color: red;">{i+1}</div>')
             ).add_to(folium_map)
 
@@ -117,7 +112,7 @@ def create_map_with_folium(chemin=None, positions_dict=None):
     
     return folium_map
 
-app = dash.Dash(__name__, server=server, external_stylesheets=[dbc.themes.LUX])
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.LUX])
 
 initial_map = create_map_with_folium()
 
@@ -205,7 +200,6 @@ def store_selected_cluster(selected_poi):
         return None, None, [], []
     cluster_id = matching_observations['Cluster'].values[0]
     cluster_data = data[data['Cluster'] == cluster_id]
-    print(cluster_data)
     labels = cluster_data['Label'].values
     positions_dict = {label: [row['Latitude'], row['Longitude']] for label, row in cluster_data.set_index('Label').iterrows()}
     options = [{'label': label, 'value': label} for label in labels]
